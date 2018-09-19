@@ -158,60 +158,67 @@ namespace PushSharp.Core
 
         public void Start ()
         {
-            WorkerTask = Task.Factory.StartNew (async delegate {
-                while (!CancelTokenSource.IsCancellationRequested && !Broker.IsCompleted) {
-
-                    try {
-                       
-                        var toSend = new List<Task> ();
-                        foreach (var n in Broker.TakeMany ()) {
-                            var t = Connection.Send (n);
-                            // Keep the continuation
-                            var cont = t.ContinueWith (ct => {
-                                var cn = n;
-                                var ex = t.Exception;
-
-                                if (ex == null)
-                                    Broker.RaiseNotificationSucceeded (cn);
-                                else
-                                    Broker.RaiseNotificationFailed (cn, ex);                                
-                            });
-
-                            // Let's wait for the continuation not the task itself
-                            toSend.Add (cont);
-                        }
-
-                        if (toSend.Count <= 0)
-                            continue;
-                       
+            try
+            {
+                WorkerTask = Task.Factory.StartNew (async delegate {
+                    while (!CancelTokenSource.IsCancellationRequested && !Broker.IsCompleted) {
+    
                         try {
-                            Log.Info ("Waiting on all tasks {0}", toSend.Count ());
-                            await Task.WhenAll (toSend).ConfigureAwait (false);
-                            Log.Info ("All Tasks Finished");
+                           
+                            var toSend = new List<Task> ();
+                            foreach (var n in Broker.TakeMany ()) {
+                                var t = Connection.Send (n);
+                                // Keep the continuation
+                                var cont = t.ContinueWith (ct => {
+                                    var cn = n;
+                                    var ex = t.Exception;
+    
+                                    if (ex == null)
+                                        Broker.RaiseNotificationSucceeded (cn);
+                                    else
+                                        Broker.RaiseNotificationFailed (cn, ex);                                
+                                });
+    
+                                // Let's wait for the continuation not the task itself
+                                toSend.Add (cont);
+                            }
+    
+                            if (toSend.Count <= 0)
+                                continue;
+                           
+                            try {
+                                Log.Info ("Waiting on all tasks {0}", toSend.Count ());
+                                await Task.WhenAll (toSend).ConfigureAwait (false);
+                                Log.Info ("All Tasks Finished");
+                            } catch (Exception ex) {
+                                Log.Error ("Waiting on all tasks Failed: {0}", ex);
+    
+                            }
+                            Log.Info ("Passed WhenAll");
+    
                         } catch (Exception ex) {
-                            Log.Error ("Waiting on all tasks Failed: {0}", ex);
-
+                            Log.Error ("Broker.Take: {0}", ex);
                         }
-                        Log.Info ("Passed WhenAll");
-
-                    } catch (Exception ex) {
-                        Log.Error ("Broker.Take: {0}", ex);
                     }
-                }
-
-                if (CancelTokenSource.IsCancellationRequested)
-                    Log.Info ("Cancellation was requested");
-                if (Broker.IsCompleted)
-                    Log.Info ("Broker IsCompleted");
-
-                Log.Debug ("Broker Task Ended");
-            }, CancelTokenSource.Token, TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap ();
-				
-            WorkerTask.ContinueWith (t => {
-                var ex = t.Exception;
-                if (ex != null)
-                    Log.Error ("ServiceWorker.WorkerTask Error: {0}", ex);
-            }, TaskContinuationOptions.OnlyOnFaulted);              
+    
+                    if (CancelTokenSource.IsCancellationRequested)
+                        Log.Info ("Cancellation was requested");
+                    if (Broker.IsCompleted)
+                        Log.Info ("Broker IsCompleted");
+    
+                    Log.Debug ("Broker Task Ended");
+                }, CancelTokenSource.Token, TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap ();
+                    
+                WorkerTask.ContinueWith (t => {
+                    var ex = t.Exception;
+                    if (ex != null)
+                        Log.Error ("ServiceWorker.WorkerTask Error: {0}", ex);
+                }, TaskContinuationOptions.OnlyOnFaulted);            
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Push notification broker encountered an unrecoverable error. " + ex.Message +" \n" +ex.StackTrace);
+            }
         }
 
         public void Cancel ()
