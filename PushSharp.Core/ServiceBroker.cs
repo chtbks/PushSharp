@@ -15,7 +15,7 @@ namespace PushSharp.Core
             ServicePointManager.DefaultConnectionLimit = 100;
             ServicePointManager.Expect100Continue = false;
         }
-
+        
         public ServiceBroker (IServiceConnectionFactory<TNotification> connectionFactory)
         {
             ServiceConnectionFactory = connectionFactory;
@@ -218,6 +218,7 @@ namespace PushSharp.Core
             catch (Exception ex)
             {
                 Console.WriteLine("Push notification broker encountered an unrecoverable error. " + ex.Message +" \n" +ex.StackTrace);
+                Start();
             }
         }
 
