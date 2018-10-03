@@ -49,10 +49,17 @@ namespace PushSharp.Apple
             timerBatchWait = new Timer (new TimerCallback (async state => {
 
                 await batchSendSemaphore.WaitAsync ();
-                try {
-                    await SendBatch ().ConfigureAwait (false);
-                } finally {
-                    batchSendSemaphore.Release ();
+                try
+                {
+                    await SendBatch().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    //ignore
+                }
+                finally
+                {
+                    batchSendSemaphore.Release();
                 }
 
             }), null, Timeout.Infinite, Timeout.Infinite);
@@ -104,92 +111,113 @@ namespace PushSharp.Apple
 
         long batchId = 0;
 
-        async Task SendBatch ()
-        {
-            batchId++;
-            if (batchId >= long.MaxValue)
-                batchId = 1;
-            
-            // Pause the timer
-            timerBatchWait.Change (Timeout.Infinite, Timeout.Infinite);
-
-            if (notifications.Count <= 0)
-                return;
-
-            // Let's store the batch items to send internally
-            var toSend = new List<CompletableApnsNotification> ();
-
-            lock (notificationBatchQueueLock)
+        async Task SendBatch (){
+            try
             {
-                while (notifications.Count > 0 && toSend.Count < Configuration.InternalBatchSize)
+                batchId++;
+                if (batchId >= long.MaxValue)
+                    batchId = 1;
+
+                // Pause the timer
+                timerBatchWait.Change(Timeout.Infinite, Timeout.Infinite);
+
+                if (notifications.Count <= 0)
+                    return;
+
+                // Let's store the batch items to send internally
+                var toSend = new List<CompletableApnsNotification>();
+
+                lock (notificationBatchQueueLock)
                 {
-                    var n = notifications.Dequeue ();
-                    toSend.Add(n);
+                    while (notifications.Count > 0 && toSend.Count < Configuration.InternalBatchSize)
+                    {
+                        var n = notifications.Dequeue();
+                        toSend.Add(n);
+                    }
                 }
-            }
 
 
-            Log.Info ("APNS-Client[{0}]: Sending Batch ID={1}, Count={2}", id, batchId, toSend.Count);
+                Log.Info("APNS-Client[{0}]: Sending Batch ID={1}, Count={2}", id, batchId, toSend.Count);
 
-            try {
+                try
+                {
 
-                var data = createBatch (toSend);
+                    var data = createBatch(toSend);
 
-                if (data != null && data.Length > 0) {
+                    if (data != null && data.Length > 0)
+                    {
 
-                    for (var i = 0; i <= Configuration.InternalBatchFailureRetryCount; i++) {
+                        for (var i = 0; i <= Configuration.InternalBatchFailureRetryCount; i++)
+                        {
 
-                        await connectingSemaphore.WaitAsync ();
+                            await connectingSemaphore.WaitAsync();
 
-                        try {
-                            // See if we need to connect
-                            if (!socketCanWrite () || i > 0)
-                                await connect ();
-                        } finally {
-                            connectingSemaphore.Release ();
+                            try
+                            {
+                                // See if we need to connect
+                                if (!socketCanWrite() || i > 0)
+                                    await connect();
+                            }
+                            finally
+                            {
+                                connectingSemaphore.Release();
+                            }
+
+                            try
+                            {
+                                await networkStream.WriteAsync(data, 0, data.Length).ConfigureAwait(false);
+                                break;
+                            }
+                            catch (Exception ex) when (i != Configuration.InternalBatchFailureRetryCount)
+                            {
+                                Log.Info("APNS-CLIENT[{0}]: Retrying Batch: Batch ID={1}, Error={2}", id, batchId, ex);
+                            }
                         }
-                
-                        try {
-                            await networkStream.WriteAsync(data, 0, data.Length).ConfigureAwait(false);
-                            break;
-                        } catch (Exception ex) when (i != Configuration.InternalBatchFailureRetryCount) {
-                            Log.Info("APNS-CLIENT[{0}]: Retrying Batch: Batch ID={1}, Error={2}", id, batchId, ex);
-                        }
+
+                        foreach (var n in toSend)
+                            sent.Add(new SentNotification(n));
                     }
 
-                    foreach (var n in toSend)
-                        sent.Add(new SentNotification(n));
                 }
-
-            } catch (Exception ex) {
-                Log.Error ("APNS-CLIENT[{0}]: Send Batch Error: Batch ID={1}, Error={2}", id, batchId, ex);
-                var errorNotificationToSend = new List<CompletableApnsNotification>();
-
-                foreach (var n in toSend)
+                catch (Exception ex)
                 {
-                    if (!n.Notification.IsDeviceRegistrationIdValid())
-                        errorNotificationToSend.Add(n);
-                    else
-                        notifications.Enqueue(n);
+                    Log.Error("APNS-CLIENT[{0}]: Send Batch Error: Batch ID={1}, Error={2}", id, batchId, ex);
+                    var errorNotificationToSend = new List<CompletableApnsNotification>();
+
+                    foreach (var n in toSend)
+                    {
+                        if (!n.Notification.IsDeviceRegistrationIdValid())
+                            errorNotificationToSend.Add(n);
+                        else
+                            notifications.Enqueue(n);
+                    }
+
+                    foreach (var n in errorNotificationToSend)
+                        n.CompleteFailed(new ApnsNotificationException(ApnsNotificationErrorStatusCode.ConnectionError,
+                            n.Notification, ex));
+
                 }
 
-                foreach (var n in errorNotificationToSend)
-                    n.CompleteFailed(new ApnsNotificationException(ApnsNotificationErrorStatusCode.ConnectionError, n.Notification, ex));
-            
+                Log.Info("APNS-Client[{0}]: Sent Batch, waiting for possible response...", id);
+
+                try
+                {
+                    await Reader();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("APNS-Client[{0}]: Reader Exception: {1}", id, ex);
+                }
+
+                Log.Info("APNS-Client[{0}]: Done Reading for Batch ID={1}, reseting batch timer...", id, batchId);
+
+                // Restart the timer for the next batch
+                timerBatchWait.Change(Configuration.InternalBatchingWaitPeriod, Timeout.InfiniteTimeSpan);
             }
-
-            Log.Info ("APNS-Client[{0}]: Sent Batch, waiting for possible response...", id);
-
-            try {
-                await Reader ();
-            } catch (Exception ex) {
-                Log.Error ("APNS-Client[{0}]: Reader Exception: {1}", id, ex);
+            catch (Exception ex)
+            {
+                //ignore
             }
-
-            Log.Info ("APNS-Client[{0}]: Done Reading for Batch ID={1}, reseting batch timer...", id, batchId);
-
-            // Restart the timer for the next batch
-            timerBatchWait.Change (Configuration.InternalBatchingWaitPeriod, Timeout.InfiniteTimeSpan);
         }
 
         byte[] createBatch (List<CompletableApnsNotification> toSend)

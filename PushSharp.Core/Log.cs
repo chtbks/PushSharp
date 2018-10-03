@@ -133,6 +133,7 @@ namespace PushSharp.Core
     {
         public void Write (LogLevel level, string msg, params object[] args)
         {
+            return;
             var s = msg;
 
             if (args != null && args.Length > 0)
