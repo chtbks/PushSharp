@@ -45,9 +45,9 @@ namespace PushSharp.Apple
 
             //Log.Info ("Finished Waiting for Notification: {0} (Had Exception? {1})", notification.Identifier, ex != null);
 
-//            if (ex != null) {
-//                throw ex;
-//            }
+            if (ex != null) {
+                throw ex;
+            }
         }
     }
 }
